@@ -360,7 +360,6 @@ for i, pkg in enumerate(avail_packages):
     pkg_sub = submission.copy()
     pkg_sub.iloc[:, 1:] = pkg_predictions
     pkg_sub.to_csv(f"{sub_folder}/{pkg}.csv", index=False)
-    # os.system(f'kaggle competitions submit -c stanford-covid-vaccine -f {pkg}.csv -m "Message"')
 
 
 # with open('subs/predictions.p','wb+') as f:
@@ -378,7 +377,7 @@ for f in range(opts.nfolds):
         to_write = np.asarray(preds_to_csv[i][0][f])
         fold_preds.append(to_write)
         to_write = to_write.transpose(1, 0, 2)
-        
+
         for vector in to_write:
             to_csv.append(vector)
 

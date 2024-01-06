@@ -2,18 +2,14 @@ import os
 import torch
 import torch.nn as nn
 import time
+import argparse
+from torch.utils.data import DataLoader
+from ranger import Ranger
 from Functions import *
 from Dataset import *
 from Network import *
 from LrScheduler import *
-import Metrics
 from Logger import CSVLogger
-import argparse
-from ranger import Ranger
-
-from torch.utils.data import DataLoader
-from torchvision import transforms, utils
-from sklearn.model_selection import train_test_split, KFold
 
 
 def get_args():
@@ -182,6 +178,7 @@ def train_fold():
     long_data = test[ls_indices]
     long_ids = np.asarray(long_data.id.to_list())
     long_sequences = np.asarray(long_data.sequence.to_list())
+
     # long_indices,_=get_train_val_indices_PL(long_sequences,opts.fold,SEED=2020,nfolds=opts.nfolds)
     # long_sequences=long_sequences[long_indices]
     # long_preds=long_preds[long_indices]
@@ -253,9 +250,7 @@ def train_fold():
         shuffle=True,
         num_workers=opts.workers,
     )
-    # print(dataset.data.shape)
-    # print(dataset.bpps[0].shape)
-    # exit()
+
     # checkpointing
     os.system("mkdir weights")
     checkpoints_folder = "weights/checkpoints_fold{}_pl".format((opts.fold))
@@ -277,6 +272,7 @@ def train_fold():
         stride=opts.stride,
         dropout=opts.dropout,
     ).to(device)
+    
     optimizer = Ranger(model.parameters(), weight_decay=opts.weight_decay)
     criterion = weighted_MCRMSE
     # lr_schedule=lr_AIAYN(optimizer,opts.ninp,opts.warmup_steps,opts.lr_scale)
@@ -303,6 +299,7 @@ def train_fold():
     lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, (opts.epochs - cos_epoch) * len(finetune_dataloader)
     )
+
     for epoch in range(opts.epochs):
         model.train(True)
         t = time.time()
@@ -371,12 +368,15 @@ def train_fold():
                 flush=True,
             )  # total_loss/(step+1)
             # break
+
             if epoch > cos_epoch:
                 lr_schedule.step()
+
         print("")
         train_loss = total_loss / (step + 1)
         # recon_acc=np.sum(recon_preds==true_seqs)/len(recon_preds)
         torch.cuda.empty_cache()
+
         if (epoch + 1) % opts.val_freq == 0 and epoch > cos_epoch:
             # if (epoch+1)%opts.val_freq==0:
             val_loss = validate(
@@ -401,9 +401,8 @@ def train_fold():
 if __name__ == "__main__":
     train_fold()
 
-
-# for i in range(3,10):
-# ngrams=np.arange(2,i)
-# print(ngrams)
-# train_fold(0,ngrams)
-# # train_fold(0,[2,3,4])
+    # for i in range(3,10):
+    # ngrams=np.arange(2,i)
+    # print(ngrams)
+    # train_fold(0,ngrams)
+    # # train_fold(0,[2,3,4])
