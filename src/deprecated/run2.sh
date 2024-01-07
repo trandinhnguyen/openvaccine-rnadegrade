@@ -1,5 +1,4 @@
-# for i in {0..4}; do
-for i in {0..9}; do
+for i in {5..9}; do
     python train.py \
         --gpu_id 0 \
         --kmer_aggregation \

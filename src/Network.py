@@ -15,10 +15,6 @@ class Mish(nn.Module):
         return x * (torch.tanh(F.softplus(x)))
 
 
-def gem(x, p=3, eps=1e-6):
-    return F.avg_pool1d(x.clamp(min=eps).pow(p), (x.size(-1))).pow(1.0 / p)
-
-
 class GeM(nn.Module):
     def __init__(self, p=3, eps=1e-6):
         super(GeM, self).__init__()
@@ -26,7 +22,10 @@ class GeM(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        return gem(x, p=self.p, eps=self.eps)
+        return self.gem(x, p=self.p, eps=self.eps)
+
+    def gem(x, p=3, eps=1e-6):
+        return F.avg_pool1d(x.clamp(min=eps).pow(p), (x.size(-1))).pow(1.0 / p)
 
     def __repr__(self):
         return (
@@ -52,33 +51,19 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(self, q, k, v, mask=None, attn_mask=None):
         attn = torch.matmul(q, k.transpose(2, 3)) / self.temperature
-        # to_plot = attn[0, 0].detach().cpu().numpy()
-        # plt.imshow(to_plot)
-        # plt.show()
-        # exit()
 
         if mask is not None:
             # attn = attn.masked_fill(mask == 0, -1e9)
-            # attn = attn#*self.gamma
+            # attn = attn * self.gamma
             attn = attn + mask * self.gamma
 
         if attn_mask is not None:
             # attn = attn+attn_mask
-            # attn=attn.float().masked_fill(attn_mask == 0, float('-inf'))
+            # attn = attn.float().masked_fill(attn_mask == 0, float('-inf'))
             attn = attn.float().masked_fill(attn_mask == 0, float("-1e-9"))
 
         attn = self.dropout(F.softmax(attn, dim=-1))
-        # to_plot=attn[0,0].detach().cpu().numpy()
-        # with open('mat.txt','w+') as f:
-        #     for vector in to_plot:
-        #         for num in vector:
-        #             f.write('{:04.3f} '.format(num))
-        #         f.write('\n')
-        # plt.imshow(to_plot)
-        # plt.show()
-        # exit()
         output = torch.matmul(attn, v)
-
         return output, attn
 
 
@@ -87,25 +72,20 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model, n_head, d_k, d_v, dropout=0.1):
         super().__init__()
-
         self.n_head = n_head
         self.d_k = d_k
         self.d_v = d_v
-
         self.w_qs = nn.Linear(d_model, n_head * d_k, bias=False)
         self.w_ks = nn.Linear(d_model, n_head * d_k, bias=False)
         self.w_vs = nn.Linear(d_model, n_head * d_v, bias=False)
         self.fc = nn.Linear(n_head * d_v, d_model, bias=False)
-
         self.attention = ScaledDotProductAttention(temperature=d_k**0.5)
-
         self.dropout = nn.Dropout(dropout)
         # self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
 
     def forward(self, q, k, v, mask=None, src_mask=None):
         d_k, d_v, n_head = self.d_k, self.d_v, self.n_head
         sz_b, len_q, len_k, len_v = q.size(0), q.size(1), k.size(1), v.size(1)
-
         residual = q
 
         # Pass through the pre-attention projection: b x lq x (n*dv)
@@ -120,25 +100,13 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             mask = mask  # For head axis broadcasting
 
-        # print(q.shape)
-        # print(k.shape)
-        # print(v.shape)
         if src_mask is not None:
             src_mask = src_mask[:, : q.shape[2]].unsqueeze(-1).float()
             # q=q+src_mask
             # k=k+src_mask
-            # print(src_mask.shape)
-            # print(src_mask[0])
             attn_mask = torch.matmul(src_mask, src_mask.permute(0, 2, 1))  # .long()
             # attn_mask=attn_mask.float().masked_fill(attn_mask == 0, float('-inf')).masked_fill(attn_mask == 1, float(0.0))
             attn_mask = attn_mask.unsqueeze(1)
-            # print(attn_mask.shape)
-            # print(src_mask.shape)
-            # to_plot=attn_mask[1].squeeze().detach().cpu().numpy()
-            # plt.imshow(to_plot)
-            # plt.show()
-            # src_mask
-            # print(q[0,0,:,0])
             q, attn = self.attention(q, k, v, mask=mask, attn_mask=attn_mask)
         else:
             q, attn = self.attention(q, k, v, mask=mask)
@@ -149,7 +117,6 @@ class MultiHeadAttention(nn.Module):
         # q = self.dropout(self.fc(q))
         # q += residual
         # q = self.layer_norm(q)
-
         return q, attn
 
 
@@ -202,10 +169,10 @@ class ConvTransformerEncoderLayer(nn.Module):
         # self.mask_conv.weight.requires_grad=False
         # self.mask_conv.weight.requires_grad=False
         # self.mask_conv.requires_grad=False
+
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
-
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
@@ -216,7 +183,6 @@ class ConvTransformerEncoderLayer(nn.Module):
         # self.dropout4 = nn.Dropout(dropout)
 
         self.activation = nn.ReLU()
-
         self.conv = nn.Conv1d(d_model, d_model, k, padding=0)
         self.deconv = nn.ConvTranspose1d(d_model, d_model, k)
 
@@ -249,7 +215,6 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=200):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
@@ -343,8 +308,6 @@ class RNADegformer(nn.Module):
 
         # attention_weights=torch.stack(attention_weights).permute(1,0,2,3)
         encoder_output = src
-        # print(deconved.shape)
-        # print(encoder_output.shape)
         output = self.decoder(encoder_output)
         # recon_src = self.recon_decoder(encoder_output)
         # error_src = self.error_decoder(encoder_output)

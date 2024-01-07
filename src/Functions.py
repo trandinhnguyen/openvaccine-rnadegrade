@@ -5,7 +5,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-import Metrics
+import Metrics as Metrics
 import numpy as np
 import os
 import pandas as pd

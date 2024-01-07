@@ -11,7 +11,7 @@ from Functions import *
 from Dataset import *
 from Network import *
 from LrScheduler import *
-import Metrics
+import Metrics as Metrics
 from Logger import CSVLogger
 from ranger import Ranger
 
