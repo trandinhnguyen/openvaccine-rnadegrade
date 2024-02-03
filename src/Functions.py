@@ -186,8 +186,8 @@ def get_test_data(path):
     return test_inputs
 
 
-def get_train_val_indices(df, fold, SEED=42, nfolds=5):
-    splits = StratifiedKFold(n_splits=nfolds, random_state=SEED, shuffle=True)
+def get_train_val_indices(df, fold, seed=42, nfolds=5):
+    splits = StratifiedKFold(n_splits=nfolds, random_state=seed, shuffle=True)
     splits = list(splits.split(df.sequence, df.SN_filter))
     train_indices = splits[fold][0]
     val_indices = splits[fold][1]
@@ -204,8 +204,8 @@ def get_train_val_indices_PL(data, fold, SEED=2020, nfolds=5):
     return train_indices, val_indices
 
 
-def get_best_weights_from_fold(fold, top=5):
-    csv_file = "log_fold{}.csv".format(fold)
+def get_best_weights_from_fold(fold, top=1):
+    csv_file = "logs/log_fold{}.csv".format(fold)
     history = pd.read_csv(csv_file)
     scores = np.asarray(-history.val_loss)
     top_epochs = scores.argsort()[-top:][::-1]

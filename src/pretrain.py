@@ -126,16 +126,13 @@ def train_fold():
 
     # instantiate datasets
     json_path = os.path.join(opts.path, "train.json")
-    # json = pd.read_json(json_path, lines=True)
+    train = pd.read_json(json_path, lines=True)
     # train_ids = json.id.to_list()
     json_path = os.path.join(opts.path, "test.json")
     test = pd.read_json(json_path, lines=True)
 
-    # aug_test=test
-    # dataloader
-    # ls_indices=test.seq_length==130
-
-    data = test  # [ls_indices]
+    # data = test
+    data = pd.concat([train, test], ignore_index=True)
 
     train_data, val_data = train_test_split(data, test_size=0.1, random_state=42)
 
@@ -169,7 +166,7 @@ def train_fold():
     )
 
     val_dataloader = DataLoader(
-        training_dataset,
+        val_dataset,
         batch_size=opts.batch_size,
         shuffle=True,
         num_workers=opts.workers,
@@ -200,24 +197,17 @@ def train_fold():
     ).to(device)
 
     optimizer = Ranger(model.parameters(), weight_decay=opts.weight_decay)
-    # optimizer=torch.optim.Adam(model.parameters())
-
     criterion = nn.CrossEntropyLoss()
-    # lr_schedule=lr_AIAYN(optimizer,opts.ninp,opts.warmup_steps,opts.lr_scale)
-
-    # Mixed precision initialization
-    opt_level = "O1"
-    # model, optimizer = amp.initialize(model, optimizer, opt_level=opt_level)
     model = nn.DataParallel(model)
 
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     print("Total number of paramters: {}".format(pytorch_total_params))
 
     # training loop
-    cos_epoch = int(opts.epochs * 0.75)
-    total_steps = len(training_dataloader)  # +len(short_dataloader)
+    cos_epoch = int(opts.epochs * 0.25)
+    total_steps = len(training_dataloader)
     lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, (opts.epochs - cos_epoch) * (total_steps)
+        optimizer, (opts.epochs - cos_epoch) * total_steps
     )
     best_loss = 100000
 
@@ -226,12 +216,9 @@ def train_fold():
         t = time.time()
         total_loss = 0
         optimizer.zero_grad()
-        train_preds = []
-        ground_truths = []
         step = 0
 
         for data in training_dataloader:
-            # for step in range(1):
             step += 1
             lr = get_lr(optimizer)
             src = data["data"]
@@ -250,7 +237,6 @@ def train_fold():
             output = model(masked, bpps, src_mask)
 
             mask_selection = src[:, :, 0] != 14
-
             loss = (
                 criterion(
                     output[0][mask_selection].reshape(-1, 4),
@@ -266,9 +252,6 @@ def train_fold():
                 )
             )
 
-            # with amp.scale_loss(loss, optimizer) as scaled_loss:
-            #    scaled_loss.backward()
-
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             optimizer.step()
@@ -279,73 +262,63 @@ def train_fold():
                 lr_schedule.step()
 
             print(
-                "Epoch [{}/{}], Step [{}/{}] Loss: {:.3f} Lr:{:.6f} Time: {:.1f}".format(
-                    epoch + 1,
-                    opts.epochs,
-                    step + 1,
-                    total_steps,
-                    total_loss / (step + 1),
-                    lr,
-                    time.time() - t,
-                ),
+                f"Epoch [{epoch + 1}/{opts.epochs}],"
+                + f" Step [{step + 1}/{total_steps}]"
+                + f" Loss: {(total_loss / (step + 1)):.3f}"
+                + f" Lr:{lr:.6f} Time: {(time.time() - t):.1f}",
                 end="\r",
                 flush=True,
-            )  # total_loss/(step+1)
+            )
 
         print("")
 
-        if (epoch + 1) % opts.save_freq == 0:
-            val_loss = []
+        # if (epoch + 1) % opts.save_freq == 0:
+        val_loss = []
 
-            for _ in tqdm(range(5)):
-                for data in val_dataloader:
-                    # for step in range(1):
-                    src = data["data"]
-                    labels = data["labels"]
-                    bpps = data["bpp"].to(device)
-                    src_mask = data["src_mask"].to(device)
+        for data in val_dataloader:
+            src = data["data"]
+            labels = data["labels"]
+            bpps = data["bpp"].to(device)
+            src_mask = data["src_mask"].to(device)
 
-                    if np.random.uniform() > 0.5:
-                        masked = mutate_rna_input(src)
-                    else:
-                        masked = mask_rna_input(src)
+            if np.random.uniform() > 0.5:
+                masked = mutate_rna_input(src)
+            else:
+                masked = mask_rna_input(src)
 
-                    src = src.to(device).long()
-                    masked = masked.to(device).long()
+            src = src.to(device).long()
+            masked = masked.to(device).long()
 
-                    with torch.no_grad():
-                        output = model(masked, bpps, src_mask)
+            with torch.no_grad():
+                output = model(masked, bpps, src_mask)
 
-                    mask_selection = src[:, :, 0] != 14
+            mask_selection = src[:, :, 0] != 14
+            loss = (
+                criterion(
+                    output[0][mask_selection].reshape(-1, 4),
+                    src[:, :, 0][mask_selection].reshape(-1),
+                )
+                + criterion(
+                    output[1][mask_selection].reshape(-1, 3),
+                    src[:, :, 1][mask_selection].reshape(-1) - 4,
+                )
+                + criterion(
+                    output[2][mask_selection].reshape(-1, 7),
+                    src[:, :, 2][mask_selection].reshape(-1) - 7,
+                )
+            )
+            val_loss.append(loss.item())
 
-                    loss = (
-                        criterion(
-                            output[0][mask_selection].reshape(-1, 4),
-                            src[:, :, 0][mask_selection].reshape(-1),
-                        )
-                        + criterion(
-                            output[1][mask_selection].reshape(-1, 3),
-                            src[:, :, 1][mask_selection].reshape(-1) - 4,
-                        )
-                        + criterion(
-                            output[2][mask_selection].reshape(-1, 7),
-                            src[:, :, 2][mask_selection].reshape(-1) - 7,
-                        )
-                    )
-                    val_loss.append(loss.item())
+        val_loss = np.mean(val_loss)
+        train_loss = total_loss / (step + 1)
+        torch.cuda.empty_cache()
+        to_log = [epoch + 1, train_loss, val_loss]
+        logger.log(to_log)
 
-            val_loss = np.mean(val_loss)
-            train_loss = total_loss / (step + 1)
-            torch.cuda.empty_cache()
-            to_log = [epoch + 1, train_loss, val_loss]
-            logger.log(to_log)
-
-            if val_loss < best_loss:
-                print(f"new best_loss found at epoch {epoch}: {val_loss}")
-                best_loss = val_loss
-                save_weights(model, optimizer, -1, checkpoints_folder)
-
-    # get_best_weights_from_fold(opts.fold)
+        if val_loss < best_loss:
+            print(f"new best_loss found at epoch {epoch + 1}: {val_loss}")
+            best_loss = val_loss
+            save_weights(model, optimizer, -1, checkpoints_folder)
 
 
 if __name__ == "__main__":

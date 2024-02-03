@@ -92,7 +92,7 @@ def get_args():
         "--nfolds", type=int, default=5, help="number of cross validation folds"
     )
     parser.add_argument("--fold", type=int, default=0, help="which fold to train")
-    parser.add_argument("--val_freq", type=int, default=1, help="which fold to train")
+    parser.add_argument("--val_freq", type=int, default=1, help="valid frequency")
     parser.add_argument(
         "--stride", type=int, default=1, help="stride used in k-mer convolution"
     )
@@ -115,7 +115,7 @@ def get_args():
         "--noise_filter",
         type=float,
         default=0.25,
-        help="number of workers for dataloader",
+        help="noise filter",
     )
     opts = parser.parse_args()
     return opts
@@ -139,28 +139,36 @@ def train_fold():
     error_weights = get_errors(json)
     error_weights = opts.error_alpha + np.exp(-error_weights * opts.error_beta)
     train_indices, val_indices = get_train_val_indices(
-        json, opts.fold, SEED=42, nfolds=opts.nfolds
+        json, opts.fold, seed=42, nfolds=opts.nfolds
     )
 
     _, labels = get_data(json)
     sequences = np.asarray(json.sequence)
-    train_seqs = sequences[train_indices]
-    val_seqs = sequences[val_indices]
-    train_labels = labels[train_indices]
-    val_labels = labels[val_indices]
-    train_ids = ids[train_indices]
-    val_ids = ids[val_indices]
-    train_ew = error_weights[train_indices]
-    val_ew = error_weights[val_indices]
+    train_seqs, val_seqs = sequences[train_indices], sequences[val_indices]
+    train_labels, val_labels = labels[train_indices], labels[val_indices]
+    train_ids, val_ids = ids[train_indices], ids[val_indices]
+    train_ew, val_ew = error_weights[train_indices], error_weights[val_indices]
 
-    # train_inputs=np.stack([train_inputs],0)
-    # val_inputs=np.stack([val_inputs,val_inputs2],0)
-    dataset = RNADataset(train_seqs, train_labels, train_ids, train_ew, opts.path)
+    dataset = RNADataset(
+        train_seqs,
+        train_labels,
+        train_ids,
+        train_ew,
+        opts.path,
+    )
     val_dataset = RNADataset(
-        val_seqs, val_labels, val_ids, val_ew, opts.path, training=False
+        val_seqs,
+        val_labels,
+        val_ids,
+        val_ew,
+        opts.path,
+        training=False,
     )
     dataloader = DataLoader(
-        dataset, batch_size=opts.batch_size, shuffle=True, num_workers=opts.workers
+        dataset,
+        batch_size=opts.batch_size,
+        shuffle=True,
+        num_workers=opts.workers,
     )
     val_dataloader = DataLoader(
         val_dataset,
@@ -171,7 +179,7 @@ def train_fold():
 
     # checkpointing
     checkpoints_folder = "checkpoints_fold{}".format((opts.fold))
-    csv_file = "log_fold{}.csv".format((opts.fold))
+    csv_file = "logs/log_fold{}.csv".format((opts.fold))
     columns = ["epoch", "train_loss", "val_loss"]
     logger = CSVLogger(columns, csv_file)
 
@@ -191,121 +199,77 @@ def train_fold():
 
     optimizer = Ranger(model.parameters(), weight_decay=opts.weight_decay)
     criterion = weighted_MCRMSE
-    # lr_schedule=lr_AIAYN(optimizer,opts.ninp,opts.warmup_steps,opts.lr_scale)
-
-    # Mixed precision initialization
-    opt_level = "O1"
-    # model, optimizer = amp.initialize(model, optimizer, opt_level=opt_level)
     model = nn.DataParallel(model)
-    # pretrained_df=pd.read_csv('pretrain.csv')
-    # print(pretrained_df.epoch[-1])
     model.load_state_dict(torch.load("pretrain_weights/epoch0.ckpt"))
 
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     print("Total number of paramters: {}".format(pytorch_total_params))
 
-    # distance_mask=get_distance_mask(107)
-    # distance_mask=torch.tensor(distance_mask).float().to(device).reshape(1,107,107)
-    # print("Starting training for fold {}/{}".format(opts.fold,opts.nfolds))
     # training loop
-    cos_epoch = int(opts.epochs * 0.75) - 1
+    cos_epoch = int(opts.epochs * 0.25)
+    total_steps = len(dataloader)
     lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, (opts.epochs - cos_epoch) * len(dataloader)
+        optimizer, (opts.epochs - cos_epoch) * total_steps
     )
+    best_loss = 100000
 
     for epoch in range(opts.epochs):
         model.train(True)
         t = time.time()
         total_loss = 0
         optimizer.zero_grad()
-        train_preds = []
-        ground_truths = []
         step = 0
+
         for data in dataloader:
-            # for step in range(1):
             step += 1
-            # lr=lr_schedule.step()
             lr = get_lr(optimizer)
-            # print(lr)
             src = data["data"].to(device)
-            labels = data["labels"]
+            labels = data["labels"].to(device) #.float()
             bpps = data["bpp"].to(device)
-            # print(bpps.shape[1])
-            # bpp_selection=np.random.randint(bpps.shape[1])
-            # bpps=bpps[:,bpp_selection]
-            # src=src[:,bpp_selection]
 
-            # print(bpps.shape)
-            # print(src.shape)
-            # exit()
-
-            # print(bpps.shape)
-            # exit()
-            # src=mutate_rna_input(src,opts.nmute)
-            # src=src.long()[:,np.random.randint(2)]
-            labels = labels.to(device)  # .float()
             output = model(src, bpps)
             ew = data["ew"].to(device)
-            # print(output.shape)
-            # print(labels.shape)
             loss = criterion(output[:, :68], labels, ew).mean()
 
-            # with amp.scale_loss(loss, optimizer) as scaled_loss:
-            #    scaled_loss.backward()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             optimizer.step()
             optimizer.zero_grad()
             total_loss += loss
             print(
-                "Epoch [{}/{}], Step [{}/{}] Loss: {:.3f} Lr:{:.6f} Time: {:.1f}".format(
-                    epoch + 1,
-                    opts.epochs,
-                    step + 1,
-                    len(dataloader),
-                    total_loss / (step + 1),
-                    lr,
-                    time.time() - t,
-                ),
+                f"Epoch [{epoch + 1}/{opts.epochs}] "
+                + f"Step [{step + 1}/{total_steps}] "
+                + f"Loss: {total_loss / (step + 1):.3f} "
+                + f"Lr:{lr:.6f} Time: {time.time() - t:.1f}",
                 end="\r",
                 flush=True,
-            )  # total_loss/(step+1)
-            # break
+            )
 
             if epoch > cos_epoch:
                 lr_schedule.step()
 
         print("")
         train_loss = total_loss / (step + 1)
-        # recon_acc=np.sum(recon_preds==true_seqs)/len(recon_preds)
         torch.cuda.empty_cache()
 
-        if (epoch + 1) % opts.val_freq == 0 and epoch > cos_epoch:
-            # if (epoch+1)%opts.val_freq==0:
-            val_loss = validate(
-                model, device, val_dataloader, batch_size=opts.batch_size
-            )
-            to_log = [
-                epoch + 1,
-                train_loss,
-                val_loss,
-            ]
-            logger.log(to_log)
+        # validate
+        val_loss = validate(
+            model, device, val_dataloader, batch_size=opts.batch_size
+        )
+        to_log = [
+            epoch + 1,
+            train_loss,
+            val_loss,
+        ]
+        logger.log(to_log)
 
-        if (epoch + 1) % opts.save_freq == 0:
+        if val_loss < best_loss:
+            print(f"New best_loss found at epoch {epoch + 1}: {val_loss}")
+            best_loss = val_loss
             save_weights(model, optimizer, epoch, checkpoints_folder)
-
-        # if epoch == cos_epoch:
-        #     print('yes')
 
     get_best_weights_from_fold(opts.fold)
 
 
 if __name__ == "__main__":
     train_fold()
-
-    # for i in range(3,10):
-    # ngrams=np.arange(2,i)
-    # print(ngrams)
-    # train_fold(0,ngrams)
-    # # train_fold(0,[2,3,4])

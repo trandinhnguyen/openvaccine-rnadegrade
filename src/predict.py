@@ -9,8 +9,6 @@ from Dataset import *
 from Network import *
 from LrScheduler import *
 
-# from Logger import CSVLogger
-
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -25,7 +23,7 @@ def get_args():
         "--weights_path",
         type=str,
         default="../",
-        help="path of csv file with DNA sequences and labels",
+        help="best weights path",
     )
     parser.add_argument(
         "--epochs", type=int, default=150, help="number of epochs to train"
@@ -97,13 +95,17 @@ def get_args():
         "--nfolds", type=int, default=5, help="number of cross validation folds"
     )
     parser.add_argument("--fold", type=int, default=0, help="which fold to train")
-    parser.add_argument("--val_freq", type=int, default=1, help="which fold to train")
+    parser.add_argument(
+        "--val_freq",
+        type=int,
+        default=1,
+        help="validating checkpoints per val_freq epochs",
+    )
     opts = parser.parse_args()
     return opts
 
 
 opts = get_args()
-# gpu selection
 os.environ["CUDA_VISIBLE_DEVICES"] = opts.gpu_id
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -112,12 +114,10 @@ os.system(f"mkdir {sub_folder}")
 
 # json_path=os.path.join(opts.path,'train.json')
 # data,labels=get_data(json_path)
-# exit()
-
 
 # checkpointing
-checkpoints_folder = "checkpoints_fold{}".format((opts.fold))
-csv_file = "log_fold{}.csv".format((opts.fold))
+# checkpoints_folder = "checkpoints_fold{}".format((opts.fold))
+# csv_file = "logs/log_fold{}.csv".format((opts.fold))
 columns = [
     "epoch",
     "train_loss",
@@ -137,7 +137,7 @@ folds = np.arange(opts.nfolds)
 for fold in folds:
     MODELS = []
 
-    for i in range(5):
+    for i in range(1):
         model = RNADegformer(
             opts.ntoken,
             opts.nclass,
@@ -150,21 +150,25 @@ for fold in folds:
             dropout=opts.dropout,
         ).to(device)
 
-        optimizer = torch.optim.Adam(model.parameters(), weight_decay=opts.weight_decay)
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            weight_decay=opts.weight_decay,
+        )
         criterion = nn.CrossEntropyLoss(reduction="none")
-        lr_schedule = lr_AIAYN(optimizer, opts.ninp, opts.warmup_steps, opts.lr_scale)
-        # Initialization
-        opt_level = "O1"
-        # model, optimizer = amp.initialize(model, optimizer, opt_level=opt_level)
-        model = nn.DataParallel(model)
+        lr_schedule = lr_AIAYN(
+            optimizer,
+            opts.ninp,
+            opts.warmup_steps,
+            opts.lr_scale,
+        )
 
+        model = nn.DataParallel(model)
         pytorch_total_params = sum(p.numel() for p in model.parameters())
         print("Total number of paramters: {}".format(pytorch_total_params))
 
         model.load_state_dict(
             torch.load(f"{opts.weights_path}/fold{fold}top{i+1}.ckpt")
         )
-        # model.load_state_dict(torch.load("checkpoints_fold0/epoch{}.ckpt".format(i)))
         model.eval()
         MODELS.append(model)
 
@@ -180,7 +184,10 @@ for fold in folds:
     fold_models.append(avg_model)
 
 
-def preprocess_inputs(df, cols=["sequence", "structure", "predicted_loop_type"]):
+def preprocess_inputs(
+    df,
+    cols=["sequence", "structure", "predicted_loop_type"],
+):
     token2int = {x: i for i, x in enumerate("ACGU().BEHIMSX")}
     return np.transpose(
         np.array(df[cols].map(lambda seq: [token2int[x] for x in seq]).values.tolist()),
@@ -188,31 +195,13 @@ def preprocess_inputs(df, cols=["sequence", "structure", "predicted_loop_type"])
     )
 
 
-# alt_structure_df=pd.read_csv(os.path.join(opts.path,'test_alternative_structure_loops.csv'))
-# alt_structure_df_50C=pd.read_csv(os.path.join(opts.path,'test_alternative_structure_loops_50C.csv'))
-
-# alt_input=
-
 json_path = os.path.join(opts.path, "test.json")
 test = pd.read_json(json_path, lines=True)
-# aug_df_path=os.path.join(opts.path,'aug_data1.csv')
-# aug_df=pd.read_csv(aug_df_path)
-# aug_test,indices=aug_data(test,aug_df)
-# aug_test=aug_test.loc[indices]
-# aug_test=test
-# dataloader
+
 ls_indices = test.seq_length == 130
-# ls_indices2=aug_test.seq_length==130
 long_data = test[ls_indices]
 data = preprocess_inputs(test[ls_indices])
 data = data.reshape(1, *data.shape)
-# alt_data=get_alt_structures(alt_structure_df[ls_indices])
-# alt_data2=get_alt_structures_50C(alt_structure_df_50C[ls_indices])
-# data=np.concatenate([data,alt_data,alt_data2],0).transpose(1,0,2,3)
-
-
-# data2=preprocess_inputs(aug_test[ls_indices2])
-# data=np.stack([data,data2],axis=0)
 
 ids = np.asarray(long_data.id.to_list())
 long_dataset = RNADataset(
@@ -228,16 +217,12 @@ long_dataloader = DataLoader(long_dataset, batch_size=opts.batch_size, shuffle=F
 
 
 ss_indices = test.seq_length == 107
-# ss_indices2=aug_test.seq_length==107
+
 short_data = test[ss_indices]
 ids = np.asarray(short_data.id.to_list())
 data = preprocess_inputs(test[ss_indices])
 data = data.reshape(1, *data.shape)
-# alt_data=get_alt_structures(alt_structure_df[ss_indices])
-# alt_data2=get_alt_structures_50C(alt_structure_df_50C[ss_indices])
-# data=np.concatenate([data,alt_data,alt_data2],0).transpose(1,0,2,3)
-# print(data.shape)
-# exit()
+
 short_dataset = RNADataset(
     short_data.sequence.to_list(),
     np.zeros(len(ss_indices)),
@@ -248,19 +233,6 @@ short_dataset = RNADataset(
     k=opts.kmers[0],
 )
 short_dataloader = DataLoader(short_dataset, batch_size=opts.batch_size, shuffle=False)
-
-
-# distance_mask1=get_distance_mask(130)
-# distance_mask1=torch.tensor(distance_mask1).float().to(device).reshape(1,130,130)
-# distance_mask2=get_distance_mask(107)
-# distance_mask2=torch.tensor(distance_mask2).float().to(device).reshape(1,107,107)
-#
-#
-# distance_mask1=get_distance_mask(130)
-# distance_mask1=torch.tensor(distance_mask1).float().to(device).reshape(1,130,130)
-# distance_mask2=get_distance_mask(107)
-# distance_mask2=torch.tensor(distance_mask2).float().to(device).reshape(1,107,107)
-# exit()
 
 nts = "ACGU().BEHIMSX"
 ids = []
@@ -334,7 +306,6 @@ for i in tqdm(range(len(preds_to_csv))):
         to_csv.append(vector)
 to_csv = np.asarray(to_csv)
 
-# avail_packages=['vienna_2', 'nupack', 'contrafold_2', 'eternafold', 'rnastructure','rna_soft']
 avail_packages = [
     "contrafold_2",
     "eternafold",
@@ -358,12 +329,10 @@ to_csv = np.concatenate(
 for i, pkg in enumerate(avail_packages):
     pkg_predictions = np.stack([to_csv[:, i * 2], to_csv[:, i * 2 + 1]], 0).mean(0)
     pkg_sub = submission.copy()
+    print(pkg_predictions.shape, pkg_sub.shape)
     pkg_sub.iloc[:, 1:] = pkg_predictions
     pkg_sub.to_csv(f"{sub_folder}/{pkg}.csv", index=False)
 
-
-# with open('subs/predictions.p','wb+') as f:
-#     pickle.dump(preds,f)
 
 
 submission.iloc[:, 1:] = to_csv.mean(1)

@@ -19,7 +19,7 @@ class RNADataset(Dataset):
         bpp_path,
         transform=None,
         training=True,
-        pad=False,
+        pad=True,
         k=5,
     ):
         self.transform = transform
@@ -32,51 +32,52 @@ class RNADataset(Dataset):
         self.training = training
         self.bpps = []
 
-        dm = get_distance_mask(
-            len(seqs[-1])
-        )  # .reshape(1,bpps.shape[-1],bpps.shape[-1])
-        self.dms = np.asarray([dm for _ in range(12)])
+        dm = get_distance_mask(130)  # .reshape(1,bpps.shape[-1],bpps.shape[-1])
+        # len(seqs[-1])
+
+        self.dms = np.asarray([dm for _ in range(12)])  # shape (12, 3, L, L)
         self.lengths = []
 
-        # load data from file
+        # load single sequence data from file
         for i, id in tqdm(enumerate(self.ids)):
+            # bpps have shape (12, L, L)
             bpps = np.load(
                 os.path.join(self.bpp_path, "train_test_bpps", id + "_bpp.npy")
             )
-            with open(
-                os.path.join(self.bpp_path, "train_test_bpps", id + "_struc.p"),
-                "rb",
-            ) as f:
-                structures = pickle.load(f)
-            with open(
-                os.path.join(self.bpp_path, "train_test_bpps", id + "_loop.p"),
-                "rb",
-            ) as f:
-                loops = pickle.load(f)
-
             if pad:
+                # add 0 to the tail of seqs have 107 len
                 bpps = np.pad(
                     bpps,
                     ([0, 0], [0, 130 - bpps.shape[1]], [0, 130 - bpps.shape[2]]),
                     constant_values=0,
                 )
 
-            # dms=np.asarray([dm for i in range(bpps.shape[0])])
-            # bpps=np.concatenate([bpps.reshape(bpps.shape[0],1,bpps.shape[1],bpps.shape[2]),dms],1)
+            with open(
+                os.path.join(self.bpp_path, "train_test_bpps", id + "_struc.p"),
+                "rb",
+            ) as f:
+                structures = pickle.load(f)
+
+            with open(
+                os.path.join(self.bpp_path, "train_test_bpps", id + "_loop.p"),
+                "rb",
+            ) as f:
+                loops = pickle.load(f)
 
             seq = self.seqs[i]
             self.lengths.append(len(seq))
             input = []
 
+            # j in range 12
             for j in range(bpps.shape[0]):
                 input_seq = np.asarray([tokens.index(s) for s in seq])
-                # input_seq=np.pad(input_seq,[0,130-bpps.shape[1]])
                 input_structure = np.asarray([tokens.index(s) for s in structures[j]])
                 input_loop = np.asarray([tokens.index(s) for s in loops[j]])
+
+                # input append an array of shape (L, 3)
                 input.append(np.stack([input_seq, input_structure, input_loop], -1))
 
-            input = np.asarray(input).astype("int")
-
+            input = np.asarray(input).astype("int")  # shape (12, L, 3)
             if pad:
                 input = np.pad(
                     input,
@@ -85,20 +86,17 @@ class RNADataset(Dataset):
                 )
 
             self.data.append(input)
-
             self.bpps.append(np.clip(bpps, 0, 1).astype("float32"))
 
-        self.data = np.asarray(self.data)
+        self.data = np.asarray(self.data)  # shape (N, 12, L, 3)
         self.lengths = np.asarray(self.lengths)
-
         self.ew = ew
         self.k = k
-
+        self.pad = pad
         self.src_masks = [
             self.generate_src_mask(self.lengths[i], self.data.shape[-2], self.k)
             for i in range(len(self.data))
-        ]
-        self.pad = pad
+        ]  # shape (N, k, L)
 
     def generate_src_mask(self, L1, L2, k):
         mask = np.ones((k, L2), dtype="int8")
@@ -110,14 +108,13 @@ class RNADataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        # sample = {'data': self.data[idx], 'labels': self.labels[idx]}
         if self.training:
             bpp_selection = np.random.randint(self.bpps[idx].shape[0])
             bpps = self.bpps[idx][bpp_selection]
             bpps = np.concatenate(
                 [bpps.reshape(1, bpps.shape[0], bpps.shape[1]), self.dms[0]], 0
             )
-            bpps = bpps.astype("float32")
+            bpps = bpps.astype("float32")  # shape (4, L, L)
 
             sample = {
                 "data": self.data[idx][bpp_selection],
@@ -127,19 +124,16 @@ class RNADataset(Dataset):
                 "id": self.ids[idx],
                 "src_mask": self.src_masks[idx],
             }
-            # else:
-            #     sample = {'data': self.data[idx][bpp_selection], 'labels': self.labels[idx], 'bpp': self.bpps[idx][bpp_selection],
-            #     'ew': self.ew[idx],'id':self.ids[idx]}
         else:
-            bpps = self.bpps[idx]
+            bpps = self.bpps[idx]  # shape (12, L, L)
             bpps = np.concatenate(
                 [
                     bpps.reshape(bpps.shape[0], 1, bpps.shape[1], bpps.shape[2]),
-                    self.dms,
+                    self.dms,  # shape (12, 3, L, L)
                 ],
                 1,
             )
-            bpps = bpps.astype("float32")
+            bpps = bpps.astype("float32")  # shape (12, 4, L, L)
             sample = {
                 "data": self.data[idx],
                 "labels": self.labels[idx],

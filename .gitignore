@@ -6,6 +6,7 @@ log*
 pretrain_weights/
 apex/
 tmp.ipynb
+old_best_weights/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -17,5 +17,5 @@ python -i predict.py \
     --warmup_steps 600 \
     --fold 0 \
     --weight_decay 1e-4 \
-    --nfolds 5 \
+    --nfolds 3 \
     --weights_path best_weights
